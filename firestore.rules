@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Direct check for the super admin email to avoid recursion
+    function isSuperAdmin() {
+      return isAuthenticated() && 
+             request.auth.token.email == "prasannashiremath27@gmail.com" && 
+             request.auth.token.email_verified == true;
+    }
+
+    // Role check that safely handles missing user documents
+    function hasRole(role) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+    
+    function isAdmin() {
+      return isSuperAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && hasRole('admin'));
+    }
+
+    function isDeliveryBoy() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && hasRole('delivery_boy');
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['admin', 'customer', 'delivery_boy'];
+    }
+
+    function isValidTicket(data) {
+      return data.keys().hasAll(['ticketNumber', 'type', 'status', 'priority', 'customerId', 'createdAt']) &&
+             data.ticketNumber is string &&
+             data.type in ['order', 'payment'] &&
+             data.status in ['pending', 'in-progress', 'resolved', 'closed'] &&
+             data.priority in ['low', 'medium', 'high'] &&
+             data.customerId is string &&
+             data.customerId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      // Allow users to read their own profile, and super admin/admins to read all
+      allow read: if isAuthenticated() && (userId == request.auth.uid || isSuperAdmin() || isAdmin());
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
+      // Allow users to update their own profile (including role for this demo)
+      allow update: if isAuthenticated() && (isSuperAdmin() || isAdmin() || (isOwner(userId) && isValidUser(request.resource.data)));
+    }
+
+    match /tickets/{ticketId} {
+      allow read: if isAuthenticated() && (
+        (resource != null && resource.data.customerId == request.auth.uid) ||
+        isSuperAdmin() ||
+        isAdmin() ||
+        (isDeliveryBoy() && resource.data.type == 'order')
+      );
+      
+      allow create: if isAuthenticated() && isValidTicket(request.resource.data);
+      
+      allow update: if isAuthenticated() && (
+        (resource != null && resource.data.customerId == request.auth.uid) ||
+        isSuperAdmin() ||
+        isAdmin() ||
+        (isDeliveryBoy() && resource.data.type == 'order')
+      );
+    }
+  }
+}
